@@ -1,0 +1,49 @@
+From 65bab5be9cde922522d21799d5bda324d8d30896 Mon Sep 17 00:00:00 2001
+From: "Schoder Philipp (BD/DPA-BDP3)" <Philipp.Schoder@de.bosch.com>
+Date: Tue, 20 Oct 2026 09:47:10 +0200
+Subject: fix(trino): Fall back to full-host key when looking up Azure SAS
+ tokens
+
+Iceberg REST catalogs such as Databricks Unity Catalog vend ADLS SAS
+tokens keyed by the full storage host, for example
+adls.sas-token.<account>.dfs.core.windows.net. Trino strips the
+adls.sas-token. prefix, so the token map is keyed by
+<account>.dfs.core.windows.net, but AzureAuthSasToken looked tokens up by
+the bare account name parsed from the file location. The lookup returned
+null and failed with "No SAS token provided for storage account".
+
+Try <account>.dfs.core.windows.net when the bare account name is not
+found. Behaviour is unchanged when the bare key is present, and the same
+exception is thrown when neither key exists.
+---
+ .../io/trino/filesystem/azure/AzureAuthSasToken.java   | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/lib/trino-filesystem-azure/src/main/java/io/trino/filesystem/azure/AzureAuthSasToken.java b/lib/trino-filesystem-azure/src/main/java/io/trino/filesystem/azure/AzureAuthSasToken.java
+index 3f92af2a66a..be7d38def7b 100644
+--- a/lib/trino-filesystem-azure/src/main/java/io/trino/filesystem/azure/AzureAuthSasToken.java
++++ b/lib/trino-filesystem-azure/src/main/java/io/trino/filesystem/azure/AzureAuthSasToken.java
+@@ -34,7 +34,10 @@ public final class AzureAuthSasToken
+     {
+         String sasToken = sasTokens.get(storageAccount);
+         if (sasToken == null) {
+-            throw new IllegalStateException("No SAS token provided for storage account: " + storageAccount);
++            sasToken = sasTokens.get(storageAccount + ".dfs.core.windows.net");
++            if (sasToken == null) {
++                throw new IllegalStateException("No SAS token provided for storage account: " + storageAccount);
++            }
+         }
+         builder.sasToken(sasToken);
+     }
+@@ -44,7 +47,10 @@ public final class AzureAuthSasToken
+     {
+         String sasToken = sasTokens.get(storageAccount);
+         if (sasToken == null) {
+-            throw new IllegalStateException("No SAS token provided for storage account: " + storageAccount);
++            sasToken = sasTokens.get(storageAccount + ".dfs.core.windows.net");
++            if (sasToken == null) {
++                throw new IllegalStateException("No SAS token provided for storage account: " + storageAccount);
++            }
+         }
+         builder.sasToken(sasToken);
+     }
