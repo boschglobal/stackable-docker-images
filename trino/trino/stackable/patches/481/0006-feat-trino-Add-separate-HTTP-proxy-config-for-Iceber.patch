@@ -1,0 +1,111 @@
+From 3a8804c169570c22ca476378a13724502a312b53 Mon Sep 17 00:00:00 2001
+From: "Schoder Philipp (BD/DPA-BDP3)" <Philipp.Schoder@de.bosch.com>
+Date: Tue, 20 Oct 2026 10:07:00 +0200
+Subject: feat(trino): Add separate HTTP proxy config for Iceberg REST OAuth2
+ token calls
+
+Add iceberg.rest-catalog.oauth2.http-proxy, .http-proxy.username and
+.http-proxy.password. They are passed to the Iceberg REST client as
+rest.auth.oauth2.proxy.hostname, .port, .username and .password.
+
+This lets the OAuth2 token request use a different proxy from the REST
+catalog traffic, for example when the identity provider is only reachable
+through a proxy but the catalog is reached directly. The password is
+marked security sensitive.
+
+Requires an Iceberg client that supports rest.auth.oauth2.proxy.*
+---
+ .../rest/IcebergRestCatalogConfig.java        | 55 +++++++++++++++++++
+ .../IcebergRestCatalogPropertiesProvider.java |  8 +++
+ 2 files changed, 63 insertions(+)
+
+diff --git a/plugin/trino-iceberg/src/main/java/io/trino/plugin/iceberg/catalog/rest/IcebergRestCatalogConfig.java b/plugin/trino-iceberg/src/main/java/io/trino/plugin/iceberg/catalog/rest/IcebergRestCatalogConfig.java
+index 4bb7f1ce94c..1998a864c98 100644
+--- a/plugin/trino-iceberg/src/main/java/io/trino/plugin/iceberg/catalog/rest/IcebergRestCatalogConfig.java
++++ b/plugin/trino-iceberg/src/main/java/io/trino/plugin/iceberg/catalog/rest/IcebergRestCatalogConfig.java
+@@ -72,6 +72,9 @@ public class IcebergRestCatalogConfig
+     private Optional<HostAndPort> httpProxy = Optional.empty();
+     private Optional<String> httpProxyUsername = Optional.empty();
+     private Optional<String> httpProxyPassword = Optional.empty();
++    private Optional<HostAndPort> oauthHttpProxy = Optional.empty();
++    private Optional<String> oauthHttpProxyUsername = Optional.empty();
++    private Optional<String> oauthHttpProxyPassword = Optional.empty();
+ 
+     @NotNull
+     public URI getBaseUri()
+@@ -323,4 +326,56 @@ public class IcebergRestCatalogConfig
+     {
+         return httpProxyUsername.isPresent() == httpProxyPassword.isPresent();
+     }
++
++    public Optional<HostAndPort> getOAuth2HttpProxy()
++    {
++        return oauthHttpProxy;
++    }
++
++    @Config("iceberg.rest-catalog.oauth2.http-proxy")
++    @ConfigDescription("HTTP proxy host and port to use for retrieiving OAuth2 tokens from the authorization server")
++    public IcebergRestCatalogConfig setOAuth2HttpProxy(HostAndPort httpProxy)
++    {
++        this.oauthHttpProxy = Optional.ofNullable(httpProxy);
++        return this;
++    }
++
++    public Optional<String> getOAuth2HttpProxyUsername()
++    {
++        return oauthHttpProxyUsername;
++    }
++
++    @Config("iceberg.rest-catalog.oauth2.http-proxy.username")
++    @ConfigDescription("HTTP proxy username")
++    public IcebergRestCatalogConfig setOAuth2HttpProxyUsername(String httpProxyUsername)
++    {
++        this.oauthHttpProxyUsername = Optional.ofNullable(httpProxyUsername);
++        return this;
++    }
++
++    public Optional<String> getOAuth2HttpProxyPassword()
++    {
++        return oauthHttpProxyPassword;
++    }
++
++    @Config("iceberg.rest-catalog.oauth2.http-proxy.password")
++    @ConfigSecuritySensitive
++    @ConfigDescription("HTTP proxy password")
++    public IcebergRestCatalogConfig setOAuth2HttpProxyPassword(String httpProxyPassword)
++    {
++        this.oauthHttpProxyPassword = Optional.ofNullable(httpProxyPassword);
++        return this;
++    }
++
++    @AssertTrue(message = "iceberg.rest-catalog.oauth2.http-proxy must be set when iceberg.rest-catalog.http-proxy.username or iceberg.rest-catalog.http-proxy.password is set")
++    public boolean isOauth2HttpProxyConfigValid()
++    {
++        return oauthHttpProxy.isPresent() || (oauthHttpProxyUsername.isEmpty() && oauthHttpProxyPassword.isEmpty());
++    }
++
++    @AssertTrue(message = "iceberg.rest-catalog.http-proxy.username and iceberg.rest-catalog.http-proxy.password must be set together")
++    public boolean isOAuth2HttpProxyCredentialsValid()
++    {
++        return oauthHttpProxyUsername.isPresent() == oauthHttpProxyPassword.isPresent();
++    }
+ }
+diff --git a/plugin/trino-iceberg/src/main/java/io/trino/plugin/iceberg/catalog/rest/IcebergRestCatalogPropertiesProvider.java b/plugin/trino-iceberg/src/main/java/io/trino/plugin/iceberg/catalog/rest/IcebergRestCatalogPropertiesProvider.java
+index f76a6d0ce92..0410dcef5d6 100644
+--- a/plugin/trino-iceberg/src/main/java/io/trino/plugin/iceberg/catalog/rest/IcebergRestCatalogPropertiesProvider.java
++++ b/plugin/trino-iceberg/src/main/java/io/trino/plugin/iceberg/catalog/rest/IcebergRestCatalogPropertiesProvider.java
+@@ -53,6 +53,14 @@ public class IcebergRestCatalogPropertiesProvider
+         });
+         restConfig.getHttpProxyUsername().ifPresent(username -> properties.put("rest.client.proxy.username", username));
+         restConfig.getHttpProxyPassword().ifPresent(password -> properties.put("rest.client.proxy.password", password));
++        restConfig.getOAuth2HttpProxy().ifPresent(proxy -> {
++            properties.put("rest.auth.oauth2.proxy.hostname", proxy.getHost());
++            properties.put("rest.auth.oauth2.proxy.port", String.valueOf(proxy.getPort()));
++        });
++        restConfig.getOAuth2HttpProxyPassword()
++                .ifPresent(password -> properties.put("rest.auth.oauth2.password", password));
++        restConfig.getOAuth2HttpProxyUsername()
++                .ifPresent(username -> properties.put("rest.auth.oauth2.username", username));
+         properties.putAll(securityProperties.get());
+         if (restConfig.isVendedCredentialsEnabled()) {
+             properties.put("header.X-Iceberg-Access-Delegation", "vended-credentials");

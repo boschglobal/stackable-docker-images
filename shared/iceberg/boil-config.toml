@@ -1,0 +1,2 @@
+[versions."1.10.1".local-images]
+java-devel = "21" # Gradle 8.14 does not support Java 25 (class file major version 69)

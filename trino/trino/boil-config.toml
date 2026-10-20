@@ -4,6 +4,7 @@ containerfile = "Dockerfile.legacy"
 [versions."477".local-images]
 java-devel = "24" # Same version as the "trino" image
 "trino/airlift" = "361" # https://github.com/trinodb/trino/blob/477/pom.xml#L184 (dep.airlift.version)
+"shared/iceberg" = "1.10.1" # Patched Iceberg REST client (separate proxy for OAuth2)
 
 [versions."477".build-arguments]
 # Note: 13.x and later are published as @cdxgen/cdxgen, 12.x and earlier as @cyclonedx/cdxgen.
@@ -17,6 +18,7 @@ containerfile = "Dockerfile.legacy"
 [versions."481".local-images]
 java-devel = "25" # Same version as the "trino" image
 "trino/airlift" = "424" # https://github.com/trinodb/trino/blob/481/pom.xml#L188 (dep.airlift.version)
+"shared/iceberg" = "1.10.1" # Patched Iceberg REST client (separate proxy for OAuth2)
 
 [versions."481".build-arguments]
 # Note: 13.x and later are published as @cdxgen/cdxgen, 12.x and earlier as @cyclonedx/cdxgen.
@@ -27,6 +29,7 @@ cdxgen-version = "13.0.1"
 [versions."483".local-images]
 java-devel = "25" # Same version as the "trino" image
 "trino/airlift" = "439" # https://github.com/trinodb/trino/blob/483/pom.xml#L189 (dep.airlift.version)
+"shared/iceberg" = "1.10.1" # Patched Iceberg REST client (separate proxy for OAuth2)
 
 [versions."483".build-arguments]
 # Note: 13.x and later are published as @cdxgen/cdxgen, 12.x and earlier as @cyclonedx/cdxgen.

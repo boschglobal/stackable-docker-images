@@ -1,0 +1,164 @@
+From d1a9b7d5f3706b01ff6f3e90860472c4b0d17705 Mon Sep 17 00:00:00 2001
+From: "Schoder Philipp (BD/DPA-BDP3)" <Philipp.Schoder@de.bosch.com>
+Date: Wed, 14 Oct 2026 14:48:21 +0200
+Subject: feat: support seperate proxy configs. If IdP for auth2 is only
+ reachable behind proxy but iceberg rest catalog is transparent reachable,
+ there must be the option to configure the proxy independable from both
+
+---
+ .../org/apache/iceberg/rest/HTTPClient.java   |  8 +--
+ .../iceberg/rest/auth/OAuth2Manager.java      | 72 +++++++++++++++----
+ 2 files changed, 64 insertions(+), 16 deletions(-)
+
+diff --git a/core/src/main/java/org/apache/iceberg/rest/HTTPClient.java b/core/src/main/java/org/apache/iceberg/rest/HTTPClient.java
+index e3067d183..38071d3c7 100644
+--- a/core/src/main/java/org/apache/iceberg/rest/HTTPClient.java
++++ b/core/src/main/java/org/apache/iceberg/rest/HTTPClient.java
+@@ -84,10 +84,10 @@ public class HTTPClient extends BaseHTTPClient {
+   static final int REST_MAX_CONNECTIONS_DEFAULT = 100;
+   static final String REST_MAX_CONNECTIONS_PER_ROUTE = "rest.client.connections-per-route";
+   static final int REST_MAX_CONNECTIONS_PER_ROUTE_DEFAULT = 100;
+-  static final String REST_PROXY_HOSTNAME = "rest.client.proxy.hostname";
+-  static final String REST_PROXY_PORT = "rest.client.proxy.port";
+-  static final String REST_PROXY_USERNAME = "rest.client.proxy.username";
+-  static final String REST_PROXY_PASSWORD = "rest.client.proxy.password";
++  public static final String REST_PROXY_HOSTNAME = "rest.client.proxy.hostname";
++  public static final String REST_PROXY_PORT = "rest.client.proxy.port";
++  public static final String REST_PROXY_USERNAME = "rest.client.proxy.username";
++  public static final String REST_PROXY_PASSWORD = "rest.client.proxy.password";
+   static final String REST_USER_AGENT = "rest.client.user-agent";
+ 
+   @VisibleForTesting
+diff --git a/core/src/main/java/org/apache/iceberg/rest/auth/OAuth2Manager.java b/core/src/main/java/org/apache/iceberg/rest/auth/OAuth2Manager.java
+index 5e01fbacb..1be4266b8 100644
+--- a/core/src/main/java/org/apache/iceberg/rest/auth/OAuth2Manager.java
++++ b/core/src/main/java/org/apache/iceberg/rest/auth/OAuth2Manager.java
+@@ -29,6 +29,7 @@ import org.apache.iceberg.catalog.TableIdentifier;
+ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
+ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
++import org.apache.iceberg.rest.HTTPClient;
+ import org.apache.iceberg.rest.RESTClient;
+ import org.apache.iceberg.rest.RESTUtil;
+ import org.apache.iceberg.rest.ResourcePaths;
+@@ -41,6 +42,11 @@ public class OAuth2Manager extends RefreshingAuthManager {
+ 
+   private static final Logger LOG = LoggerFactory.getLogger(OAuth2Manager.class);
+ 
++  public static final String OAUTH2_PROXY_HOSTNAME = "rest.auth.oauth2.proxy.hostname";
++  public static final String OAUTH2_PROXY_PORT = "rest.auth.oauth2.proxy.port";
++  public static final String OAUTH2_PROXY_USERNAME = "rest.auth.oauth2.proxy.username";
++  public static final String OAUTH2_PROXY_PASSWORD = "rest.auth.oauth2.proxy.password";
++
+   private static final List<String> TOKEN_PREFERENCE_ORDER =
+       ImmutableList.of(
+           OAuth2Properties.ID_TOKEN_TYPE,
+@@ -68,6 +74,35 @@ public class OAuth2Manager extends RefreshingAuthManager {
+     this.name = managerName;
+   }
+ 
++  private static RESTClient buildAuthClient(
++      Map<String, String> properties, String oauth2ServerUri) {
++    Map<String, String> authClientProps = Maps.newHashMap(properties);
++
++    authClientProps.remove(HTTPClient.REST_PROXY_HOSTNAME);
++    authClientProps.remove(HTTPClient.REST_PROXY_PORT);
++    authClientProps.remove(HTTPClient.REST_PROXY_USERNAME);
++    authClientProps.remove(HTTPClient.REST_PROXY_PASSWORD);
++
++    String proxyHostname = properties.get(OAUTH2_PROXY_HOSTNAME);
++    String proxyPort = properties.get(OAUTH2_PROXY_PORT);
++    if (proxyHostname != null && proxyPort != null) {
++      authClientProps.put(HTTPClient.REST_PROXY_HOSTNAME, proxyHostname);
++      authClientProps.put(HTTPClient.REST_PROXY_PORT, proxyPort);
++    }
++
++    String proxyUsername = properties.get(OAUTH2_PROXY_USERNAME);
++    String proxyPassword = properties.get(OAUTH2_PROXY_PASSWORD);
++    if (proxyUsername != null && proxyPassword != null) {
++      authClientProps.put(HTTPClient.REST_PROXY_USERNAME, proxyUsername);
++      authClientProps.put(HTTPClient.REST_PROXY_PASSWORD, proxyPassword);
++    }
++
++    return HTTPClient.builder(authClientProps)
++        .uri(oauth2ServerUri)
++        .withAuthSession(AuthSession.EMPTY)
++        .build();
++  }
++
+   @Override
+   public OAuth2Util.AuthSession initSession(RESTClient initClient, Map<String, String> properties) {
+     warnIfOAuthServerUriNotSet(properties);
+@@ -83,14 +118,18 @@ public class OAuth2Manager extends RefreshingAuthManager {
+       // but keep track of the start time, so that token refresh can be
+       // enabled later on when catalogSession is called.
+       this.startTimeMillis = System.currentTimeMillis();
+-      this.authResponse =
+-          OAuth2Util.fetchToken(
+-              initClient.withAuthSession(session),
+-              Map.of(),
+-              config.credential(),
+-              config.scope(),
+-              config.oauth2ServerUri(),
+-              config.optionalOAuthParams());
++      try (RESTClient authClient = buildAuthClient(properties, config.oauth2ServerUri())) {
++        this.authResponse =
++            OAuth2Util.fetchToken(
++                initClient.withAuthSession(session),
++                Map.of(),
++                config.credential(),
++                config.scope(),
++                config.oauth2ServerUri(),
++                config.optionalOAuthParams());
++      } catch (Exception e) {
++        throw new RuntimeException("Failed to fetch token from OAuth2 server", e);
++      }
+       return OAuth2Util.AuthSession.fromTokenResponse(
+           initClient, null, authResponse, startTimeMillis, session);
+     } else if (config.token() != null) {
+@@ -104,9 +143,9 @@ public class OAuth2Manager extends RefreshingAuthManager {
+   public OAuth2Util.AuthSession catalogSession(
+       RESTClient sharedClient, Map<String, String> properties) {
+     // This client will be used for token refreshes; it should not have an auth session.
+-    this.refreshClient = sharedClient.withAuthSession(AuthSession.EMPTY);
+-    this.sessionCache = newSessionCache(name, properties);
+     AuthConfig config = AuthConfig.fromProperties(properties);
++    this.refreshClient = buildAuthClient(properties, config.oauth2ServerUri());
++    this.sessionCache = newSessionCache(name, properties);
+     Map<String, String> headers = OAuth2Util.authHeaders(config.token());
+     OAuth2Util.AuthSession session = new OAuth2Util.AuthSession(headers, config);
+     keepRefreshed(config.keepRefreshed());
+@@ -122,7 +161,7 @@ public class OAuth2Manager extends RefreshingAuthManager {
+     } else if (config.credential() != null && !config.credential().isEmpty()) {
+       OAuthTokenResponse response =
+           OAuth2Util.fetchToken(
+-              sharedClient.withAuthSession(session),
++              refreshClient.withAuthSession(session),
+               Map.of(),
+               config.credential(),
+               config.scope(),
+@@ -171,7 +210,7 @@ public class OAuth2Manager extends RefreshingAuthManager {
+     if (refreshClient == null) {
+       synchronized (this) {
+         if (refreshClient == null) {
+-          this.refreshClient = sharedClient.withAuthSession(parent);
++          this.refreshClient = buildAuthClient(properties, config.oauth2ServerUri());
+         }
+       }
+     }
+@@ -212,6 +251,15 @@ public class OAuth2Manager extends RefreshingAuthManager {
+         cache.close();
+       }
+     }
++    RESTClient client = refreshClient;
++    this.refreshClient = null;
++    if (client != null) {
++      try {
++        client.close();
++      } catch (Exception e) {
++        LOG.warn("Failed to close refresh client", e);
++      }
++    }
+   }
+ 
+   protected AuthSessionCache newSessionCache(String managerName, Map<String, String> properties) {

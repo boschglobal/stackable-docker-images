@@ -2,6 +2,8 @@
 # check=error=true
 FROM local-image/trino/airlift AS airlift-builder
 
+FROM local-image/shared/iceberg AS iceberg-builder
+
 FROM local-image/java-devel AS trino-builder
 
 ARG PRODUCT_VERSION
@@ -18,6 +20,7 @@ WORKDIR /stackable
 COPY --chown=${STACKABLE_USER_UID}:0 trino/trino/stackable/patches/patchable.toml /stackable/src/trino/trino/stackable/patches/patchable.toml
 COPY --chown=${STACKABLE_USER_UID}:0 trino/trino/stackable/patches/${PRODUCT_VERSION} /stackable/src/trino/trino/stackable/patches/${PRODUCT_VERSION}
 COPY --chown=${STACKABLE_USER_UID}:0 --from=airlift-builder /stackable/patched-libs /stackable/patched-libs
+COPY --chown=${STACKABLE_USER_UID}:0 --from=iceberg-builder /stackable/.m2/repository /stackable/patched-iceberg/
 
 RUN <<EOF
 # Install Node, cdxgen and Python to create the SBOMs of the web UI dependencies, which the
@@ -49,8 +52,9 @@ COPY --chown=${STACKABLE_USER_UID}:0 trino/trino/stackable/vendored-js/${PRODUCT
 RUN --mount=type=cache,id=maven-${PRODUCT_VERSION},target=/root/.m2/repository <<EOF
 cd "$(/stackable/patchable --images-repo-root=src checkout trino/trino ${PRODUCT_VERSION})"
 
-# Make Maven aware of the patched Airlift artifacts before resolving deps
+# Make Maven aware of the patched Airlift and Iceberg artifacts before resolving deps
 cp -r /stackable/patched-libs/maven/* /root/.m2/repository
+cp -r /stackable/patched-iceberg/* /root/.m2/repository/
 
 NEW_VERSION="${PRODUCT_VERSION}-stackable${RELEASE_VERSION}"
 
