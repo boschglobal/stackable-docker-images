@@ -1,0 +1,206 @@
+From 39a8680e5c67d42b8f96aecf842fc7846922cc4d Mon Sep 17 00:00:00 2001
+From: "Schoder Philipp (BD/DPA-BDP3)" <Philipp.Schoder@de.bosch.com>
+Date: Tue, 20 Oct 2026 09:30:39 +0200
+Subject: feat(trino): Add HTTP proxy config for the Azure filesystem
+
+Add azure.http-proxy, azure.http-proxy.username,
+azure.http-proxy.password and azure.http-proxy.non-proxy-hosts.
+
+When azure.http-proxy is set, the Azure SDK HTTP client routes requests
+through the proxy using ProxyOptions, with optional basic credentials
+and a list of hosts that bypass it. The password is marked security
+sensitive. Nothing changes unless the new options are set.
+---
+ .../azure/AzureFileSystemConfig.java          | 76 +++++++++++++++++++
+ .../azure/AzureFileSystemFactory.java         | 31 +++++++-
+ 2 files changed, 105 insertions(+), 2 deletions(-)
+
+diff --git a/lib/trino-filesystem-azure/src/main/java/io/trino/filesystem/azure/AzureFileSystemConfig.java b/lib/trino-filesystem-azure/src/main/java/io/trino/filesystem/azure/AzureFileSystemConfig.java
+index 8d3b8373795..50b690b175b 100644
+--- a/lib/trino-filesystem-azure/src/main/java/io/trino/filesystem/azure/AzureFileSystemConfig.java
++++ b/lib/trino-filesystem-azure/src/main/java/io/trino/filesystem/azure/AzureFileSystemConfig.java
+@@ -13,19 +13,26 @@
+  */
+ package io.trino.filesystem.azure;
+ 
++import com.google.common.base.Splitter;
++import com.google.common.collect.ImmutableSet;
++import com.google.common.net.HostAndPort;
+ import io.airlift.configuration.Config;
+ import io.airlift.configuration.ConfigDescription;
++import io.airlift.configuration.ConfigSecuritySensitive;
+ import io.airlift.units.DataSize;
+ import io.airlift.units.DataSize.Unit;
+ import io.airlift.units.Duration;
++import jakarta.validation.constraints.AssertTrue;
+ import jakarta.validation.constraints.Max;
+ import jakarta.validation.constraints.Min;
+ import jakarta.validation.constraints.NotEmpty;
+ import jakarta.validation.constraints.NotNull;
+ import jakarta.validation.constraints.Size;
+ 
++import java.util.Set;
+ import java.util.concurrent.TimeUnit;
+ 
++import static com.google.common.base.Strings.nullToEmpty;
+ import static java.lang.Math.max;
+ 
+ public class AzureFileSystemConfig
+@@ -52,6 +59,10 @@ public class AzureFileSystemConfig
+     private Duration httpRequestTimeout = new Duration(10, TimeUnit.MINUTES);
+     private String applicationId = "Trino";
+     private boolean multipartWriteEnabled;
++    private HostAndPort httpProxy;
++    private String httpProxyUsername;
++    private String httpProxyPassword;
++    private Set<String> nonProxyHosts = ImmutableSet.of();
+ 
+     @NotNull
+     public AuthType getAuthType()
+@@ -214,4 +225,69 @@ public class AzureFileSystemConfig
+         this.multipartWriteEnabled = multipartWriteEnabled;
+         return this;
+     }
++
++    public HostAndPort getHttpProxy()
++    {
++        return httpProxy;
++    }
++
++    @Config("azure.http-proxy")
++    @ConfigDescription("HTTP proxy host and port")
++    public AzureFileSystemConfig setHttpProxy(HostAndPort httpProxy)
++    {
++        this.httpProxy = httpProxy;
++        return this;
++    }
++
++    public String getHttpProxyUsername()
++    {
++        return httpProxyUsername;
++    }
++
++    @Config("azure.http-proxy.username")
++    @ConfigDescription("HTTP proxy username")
++    public AzureFileSystemConfig setHttpProxyUsername(String httpProxyUsername)
++    {
++        this.httpProxyUsername = httpProxyUsername;
++        return this;
++    }
++
++    public String getHttpProxyPassword()
++    {
++        return httpProxyPassword;
++    }
++
++    @Config("azure.http-proxy.password")
++    @ConfigDescription("HTTP proxy password")
++    @ConfigSecuritySensitive
++    public AzureFileSystemConfig setHttpProxyPassword(String httpProxyPassword)
++    {
++        this.httpProxyPassword = httpProxyPassword;
++        return this;
++    }
++
++    public Set<String> getNonProxyHosts()
++    {
++        return nonProxyHosts;
++    }
++
++    @Config("azure.http-proxy.non-proxy-hosts")
++    @ConfigDescription("Comma-separated list of hosts that should not use the proxy")
++    public AzureFileSystemConfig setNonProxyHosts(String nonProxyHosts)
++    {
++        this.nonProxyHosts = ImmutableSet.copyOf(Splitter.on(',').omitEmptyStrings().trimResults().split(nullToEmpty(nonProxyHosts)));
++        return this;
++    }
++
++    @AssertTrue(message = "azure.http-proxy must be set when azure.http-proxy.username, azure.http-proxy.password or azure.http-proxy.non-proxy-hosts is set")
++    public boolean isHttpProxyConfigValid()
++    {
++        return httpProxy != null || (httpProxyUsername == null && httpProxyPassword == null && nonProxyHosts.isEmpty());
++    }
++
++    @AssertTrue(message = "azure.http-proxy.username and azure.http-proxy.password must be set together")
++    public boolean isHttpProxyCredentialsValid()
++    {
++        return (httpProxyUsername == null) == (httpProxyPassword == null);
++    }
+ }
+diff --git a/lib/trino-filesystem-azure/src/main/java/io/trino/filesystem/azure/AzureFileSystemFactory.java b/lib/trino-filesystem-azure/src/main/java/io/trino/filesystem/azure/AzureFileSystemFactory.java
+index ece7cfd1c08..c63e0287684 100644
+--- a/lib/trino-filesystem-azure/src/main/java/io/trino/filesystem/azure/AzureFileSystemFactory.java
++++ b/lib/trino-filesystem-azure/src/main/java/io/trino/filesystem/azure/AzureFileSystemFactory.java
+@@ -14,11 +14,13 @@
+ package io.trino.filesystem.azure;
+ 
+ import com.azure.core.http.HttpClient;
++import com.azure.core.http.ProxyOptions;
+ import com.azure.core.http.netty.NettyAsyncHttpClientBuilder;
+ import com.azure.core.http.policy.HttpPipelinePolicy;
+ import com.azure.core.tracing.opentelemetry.OpenTelemetryTracingOptions;
+ import com.azure.core.util.HttpClientOptions;
+ import com.azure.core.util.TracingOptions;
++import com.google.common.net.HostAndPort;
+ import com.google.inject.Inject;
+ import io.airlift.units.DataSize;
+ import io.airlift.units.Duration;
+@@ -32,8 +34,10 @@ import io.trino.spi.security.ConnectorIdentity;
+ import jakarta.annotation.PreDestroy;
+ import reactor.netty.resources.ConnectionProvider;
+ 
++import java.net.InetSocketAddress;
+ import java.util.Map;
+ import java.util.Map.Entry;
++import java.util.Set;
+ import java.util.concurrent.ExecutionException;
+ import java.util.concurrent.ExecutorService;
+ 
+@@ -77,7 +81,11 @@ public class AzureFileSystemFactory
+                 config.getConnectionPoolMaxIdleTime(),
+                 config.getHttpRequestTimeout(),
+                 config.getApplicationId(),
+-                config.isMultipartWriteEnabled());
++                config.isMultipartWriteEnabled(),
++                config.getHttpProxy(),
++                config.getHttpProxyUsername(),
++                config.getHttpProxyPassword(),
++                config.getNonProxyHosts());
+     }
+ 
+     public AzureFileSystemFactory(
+@@ -93,7 +101,11 @@ public class AzureFileSystemFactory
+             Duration connectionPoolMaxIdleTime,
+             Duration httpRequestTimeout,
+             String applicationId,
+-            boolean multipart)
++            boolean multipart,
++            HostAndPort httpProxy,
++            String httpProxyUsername,
++            String httpProxyPassword,
++            Set<String> nonProxyHosts)
+     {
+         this.auth = requireNonNull(azureAuth, "azureAuth is null");
+         this.endpoint = requireNonNull(endpoint, "endpoint is null");
+@@ -114,6 +126,21 @@ public class AzureFileSystemFactory
+         clientOptions.setTracingOptions(tracingOptions);
+         clientOptions.setApplicationId(applicationId);
+         clientOptions.setMaximumConnectionPoolSize(maxHttpConnections);
++
++        // Configure proxy if provided
++        if (httpProxy != null) {
++            ProxyOptions proxyOptions = new ProxyOptions(
++                    ProxyOptions.Type.HTTP,
++                    new InetSocketAddress(httpProxy.getHost(), httpProxy.getPort()));
++            if (httpProxyUsername != null && httpProxyPassword != null) {
++                proxyOptions.setCredentials(httpProxyUsername, httpProxyPassword);
++            }
++            if (!nonProxyHosts.isEmpty()) {
++                proxyOptions.setNonProxyHosts(String.join("|", nonProxyHosts));
++            }
++            clientOptions.setProxyOptions(proxyOptions);
++        }
++
+         httpClient = createAzureHttpClient(connectionProvider, eventLoopGroup, clientOptions);
+         this.multipart = multipart;
+         this.concurrencyPolicy = new ConcurrencyLimitHttpPipelinePolicy(
