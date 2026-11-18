@@ -6,10 +6,6 @@ FROM local-image/java-devel AS builder
 ARG PRODUCT_VERSION
 ARG RELEASE_VERSION
 ARG STACKABLE_USER_UID
-# Optional: Java (and thus the Gradle wrapper) ignores HTTP(S)_PROXY env vars
-ARG HTTP_PROXY=""
-ARG HTTPS_PROXY=""
-ARG NO_PROXY=""
 
 COPY --chown=${STACKABLE_USER_UID}:0 shared/iceberg/stackable/patches/patchable.toml /stackable/src/shared/iceberg/stackable/patches/patchable.toml
 COPY --chown=${STACKABLE_USER_UID}:0 shared/iceberg/stackable/patches/${PRODUCT_VERSION} /stackable/src/shared/iceberg/stackable/patches/${PRODUCT_VERSION}
